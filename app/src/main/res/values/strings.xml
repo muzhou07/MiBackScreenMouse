@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 界面文案都在 Compose 里硬编码，这里只保留清单用得到的应用名 -->
+    <string name="app_name">背屏鼠标</string>
+</resources>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 触控板 + 光标 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#7A7F8C"
+        android:pathData="M30,36 h48 a6,6 0 0 1 6,6 v24 a6,6 0 0 1 -6,6 h-48 a6,6 0 0 1 -6,-6 v-24 a6,6 0 0 1 6,-6 z" />
+    <path
+        android:fillColor="#2A2D33"
+        android:pathData="M32,39 h44 a3,3 0 0 1 3,3 v21 a3,3 0 0 1 -3,3 h-44 a3,3 0 0 1 -3,-3 v-21 a3,3 0 0 1 3,-3 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M44,46 h20 a2,2 0 0 1 2,2 v14 h-24 v-14 a2,2 0 0 1 2,-2 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M52,60 l10,10 -4,0 0,8 -4,0 0,-8 -4,0 z" />
+</vector>

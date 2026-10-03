@@ -1,0 +1,15 @@
+# 默认让 Git 自动判断文本文件
+* text=auto
+
+# 明确指定这些文件必须用 LF（不能被转成 CRLF）
+*.sh text eol=lf
+gradlew text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不做换行符转换
+*.png binary
+*.jpg binary
+*.jar binary
+*.keystore binary
+*.jks binary
