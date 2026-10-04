@@ -34,6 +34,16 @@
 #define SEND_BUF 4096
 #define SOCK_PATH_MAX 200             /* 文件系统 socket 路径上限 */
 #define PROTO_VER 4                   /* v4：控制口改为 App 私有目录内 socket，并强制校验对端 uid */
+#define MAX_MOVE 10000                /* 单条指令允许的最大位移（即使已鉴权也不接受极端值） */
+#define MAX_WHEEL 100                 /* 单条指令允许的最大滚轮量 */
+
+/* 调试开关（--no-auth / --tcp / --token / --no-grab）默认不编译进正式包：
+   构建脚本只在 debug 变体上传 -DBSM_DEBUG_TOOLS。 */
+#ifdef BSM_DEBUG_TOOLS
+#define DEBUG_TOOLS 1
+#else
+#define DEBUG_TOOLS 0
+#endif
 
 /* 控制口默认只开文件系统 socket（--sock 指定，位于 App 私有目录）；
  * TCP 口仅在显式传 --tcp PORT 时开启，供手动调试。 */
@@ -48,8 +58,10 @@ static bool g_no_grab = false;
 static bool g_debug = false;
 static int g_write_log = 0;
 static bool g_quit = false;   /* 收到 Q 指令：立刻退出 */
-static int g_app_pid = -1;    /* App 主进程 pid（握手上报） */
+static int g_app_pid = -1;    /* App 主进程 pid（优先取 SO_PEERCRED；TCP 调试口才用 V 自报值） */
 static int g_app_uid = -1;    /* App 主进程 uid（防 pid 复用误判） */
+static int g_conn_pid = -1;   /* 当前连接对端 pid（SO_PEERCRED；拿不到时为 -1） */
+static int g_conn_uid = -1;   /* 当前连接对端 uid */
 
 /* 控制口：文件系统 socket 路径（--sock）与合法客户端 uid（--uid，-1=不限制，仅调试） */
 static char g_sock_path[SOCK_PATH_MAX] = {0};
@@ -429,6 +441,8 @@ static void client_disconnected(void) {
     g_client = -1;
     g_send_len = 0;
     g_authed = false;
+    g_conn_pid = -1;
+    g_conn_uid = -1;
     grab_touch(false);
     reset_slots();
     logf_("App 断开，已释放触摸设备，等待新连接");
@@ -463,6 +477,13 @@ static void accept_client(int fd) {
         close(c);
         return;
     }
+    /* 以 SO_PEERCRED 为准绑定生命周期：不采信客户端用 V 自报的 pid/uid */
+    g_conn_pid = peer_pid;
+    g_conn_uid = peer_uid;
+    if (peer_pid > 0 && (g_peer_uid < 0 || peer_uid == g_peer_uid)) {
+        g_app_pid = peer_pid;
+        g_app_uid = peer_uid;
+    }
 
     if (g_client >= 0) {
         /* 新连接顶替旧连接：App 重连时旧 fd 可能还没被内核回收 */
@@ -485,6 +506,11 @@ static void accept_client(int fd) {
     handshake();
 }
 
+/* 幅值钳制：即使客户端已鉴权，也不让它用极端值驱动大循环 */
+static int clamp_i(int v, int lo, int hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
 static void handle_client_line(char *line) {
     /* 未鉴权的连接只接受 A <token>，其它一律断开 */
     if (!g_authed) {
@@ -503,22 +529,24 @@ static void handle_client_line(char *line) {
     switch (line[0]) {
         case 'M': {
             int dx = 0, dy = 0;
-            if (sscanf(line + 1, "%d %d", &dx, &dy) == 2) mouse_move(dx, dy);
+            if (sscanf(line + 1, "%d %d", &dx, &dy) == 2) {
+                mouse_move(clamp_i(dx, -MAX_MOVE, MAX_MOVE), clamp_i(dy, -MAX_MOVE, MAX_MOVE));
+            }
             break;
         }
         case 'B': {
             int n = 0, d = 0;
-            if (sscanf(line + 1, "%d %d", &n, &d) == 2) mouse_button(n, d);
+            if (sscanf(line + 1, "%d %d", &n, &d) == 2) mouse_button(n, d ? 1 : 0);
             break;
         }
         case 'W': {
             int d = 0;
-            if (sscanf(line + 1, "%d", &d) == 1) mouse_wheel(REL_WHEEL, d);
+            if (sscanf(line + 1, "%d", &d) == 1) mouse_wheel(REL_WHEEL, clamp_i(d, -MAX_WHEEL, MAX_WHEEL));
             break;
         }
         case 'H': {
             int d = 0;
-            if (sscanf(line + 1, "%d", &d) == 1) mouse_wheel(REL_HWHEEL, d);
+            if (sscanf(line + 1, "%d", &d) == 1) mouse_wheel(REL_HWHEEL, clamp_i(d, -MAX_WHEEL, MAX_WHEEL));
             break;
         }
         case 'P':
@@ -527,12 +555,19 @@ static void handle_client_line(char *line) {
             send_flush();
             break;
         case 'V': {
-            /* V <proto> <pid> <uid>：记录 App 主进程，它一结束助手就退出 */
+            /* V <proto> <pid> <uid>：App 自报主进程；已从 SO_PEERCRED 拿到真实凭据时不采信自报值 */
             int ver = 0, pid = -1, uid = -1;
             int got = sscanf(line + 1, "%d %d %d", &ver, &pid, &uid);
-            if (got >= 2) g_app_pid = pid;
-            if (got >= 3) g_app_uid = uid;
-            if (g_debug) logf_("App 握手: proto=%d pid=%d uid=%d", ver, pid, uid);
+            if (g_conn_pid > 0) {
+                if (g_debug) {
+                    logf_("App 握手: proto=%d（pid/uid 以 SO_PEERCRED 为准 %d/%d）",
+                          ver, g_conn_pid, g_conn_uid);
+                }
+            } else {
+                if (got >= 2) g_app_pid = pid;
+                if (got >= 3) g_app_uid = uid;
+                if (g_debug) logf_("App 握手: proto=%d pid=%d uid=%d（TCP 调试口，采用自报值）", ver, pid, uid);
+            }
             break;
         }
         case 'Q':
@@ -778,6 +813,13 @@ static bool read_token_file(const char *path) {
     return true;
 }
 
+/* 正式版（未定义 BSM_DEBUG_TOOLS）里，这些调试开关一律拒绝 */
+static int reject_debug_option(const char *opt) {
+    fprintf(stderr, "该选项在当前构建中不可用: %s\n", opt);
+    logf_("拒绝调试选项: %s", opt);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     const char *device = NULL;
     const char *token_file = NULL;
@@ -796,10 +838,12 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--daemon") == 0) {
             daemon = true;
         } else if (strcmp(argv[i], "--no-grab") == 0) {
+            if (!DEBUG_TOOLS) return reject_debug_option(argv[i]);
             no_grab = true;
         } else if (strcmp(argv[i], "--debug") == 0) {
-            debug = true;
+            debug = true;                   /* 只影响日志详细度，不算调试后门 */
         } else if (strcmp(argv[i], "--no-auth") == 0) {
+            if (!DEBUG_TOOLS) return reject_debug_option(argv[i]);
             no_auth = true;                 /* 仅调试：显式关闭鉴权 */
         } else if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
             device = argv[++i];
@@ -810,14 +854,17 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--token-file") == 0 && i + 1 < argc) {
             token_file = argv[++i];
         } else if (strcmp(argv[i], "--tcp") == 0 && i + 1 < argc) {
+            if (!DEBUG_TOOLS) return reject_debug_option(argv[i]);
             port = (uint16_t)atoi(argv[++i]);   /* 仅手动调试 */
         } else if (strcmp(argv[i], "--token") == 0 && i + 1 < argc) {
+            if (!DEBUG_TOOLS) return reject_debug_option(argv[i]);
             snprintf(g_token, sizeof g_token, "%s", argv[++i]);   /* 仅手动调试 */
         } else {
             fprintf(stderr,
                     "用法: %s --daemon --sock PATH --uid N [--token-file PATH]\n"
                     "      %s [--list] [--selftest]\n"
-                    "调试: [--device PATH] [--tcp PORT] [--token HEX] [--no-auth] [--no-grab] [--debug]\n",
+                    "调试（仅 debug 构建可用）: [--device PATH] [--tcp PORT] [--token HEX] [--no-auth] [--no-grab]\n"
+                    "其它: [--debug]\n",
                     argv[0], argv[0]);
             return 1;
         }
@@ -839,7 +886,13 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (no_auth) logf_("警告：--no-auth 已关闭鉴权，仅用于调试");
-    if (g_peer_uid < 0) logf_("警告：未指定 --uid，不限制客户端 uid（仅调试）");
+    if (g_peer_uid < 0) {
+        if (!DEBUG_TOOLS) {
+            fprintf(stderr, "正式版必须指定 --uid（客户端 uid 白名单）\n");
+            return 1;
+        }
+        logf_("警告：未指定 --uid，不限制客户端 uid（仅调试）");
+    }
 
     g_daemon = true;
     g_no_grab = no_grab;

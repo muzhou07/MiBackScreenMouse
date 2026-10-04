@@ -26,8 +26,8 @@ android {
         applicationId = "mz.mibackscreen.mouse"
         minSdk = 35
         targetSdk = 37
-        versionCode = 4
-        versionName = "1.0.1"
+        versionCode = 5
+        versionName = "1.0.2"
     }
 
     signingConfigs {
@@ -54,11 +54,10 @@ android {
             // 不混淆
             isMinifyEnabled = false
             isShrinkResources = false
-            // 有正式密钥就用它，否则退回 debug 签名
-            signingConfig = if (releaseKeyFile != null) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
+            // 正式包必须有正式密钥：缺密钥时不配置签名（assembleRelease 会在文末自检里直接失败），
+            // 这样既不会"悄悄退回 debug 签名"，也不影响 assembleDebug。
+            if (releaseKeyFile != null) {
+                signingConfig = signingConfigs.getByName("release")
             }
         }
     }
@@ -112,21 +111,35 @@ val buildRootHelper = tasks.register("buildRootHelper") {
     val outDir = layout.projectDirectory.dir("src/main/jniLibs/$helperAbi").asFile
     val outFile = File(outDir, "libbsm_helper.so")
 
+    // 调试开关（--no-auth/--tcp/--token/--no-grab）只在 debug 变体的助手里编译进去。
+    // 同时请求 debug+release（如 `build`）时按安全侧处理：不带调试开关。
+    val wantDebugTools = gradle.startParameter.taskNames.any {
+        it.contains("debug", ignoreCase = true)
+    } && gradle.startParameter.taskNames.none {
+        it.contains("release", ignoreCase = true)
+    }
+
     inputs.file(srcFile)
+    inputs.property("debugTools", wantDebugTools)
     outputs.file(outFile)
 
     doLast {
         require(clang.isFile) { "找不到交叉编译器: ${clang.absolutePath}（检查 NDK $helperNdkRevision）" }
         outDir.mkdirs()
+        val args = mutableListOf(
+            clang.absolutePath,
+            "-O2", "-std=c11", "-Wall", "-Wno-unused-parameter", "-Wno-unused-result",
+        )
+        if (wantDebugTools) args += "-DBSM_DEBUG_TOOLS"
+        args += listOf(srcFile.absolutePath, "-o", outFile.absolutePath)
         project.providers.exec {
             workingDir = projectDir
-            commandLine(
-                clang.absolutePath,
-                "-O2", "-std=c11", "-Wall", "-Wno-unused-parameter", "-Wno-unused-result",
-                srcFile.absolutePath, "-o", outFile.absolutePath,
-            )
+            commandLine(args)
         }.result.get().assertNormalExitValue()
-        logger.lifecycle("bsm_helper -> ${outFile.relativeTo(rootDir)} (${outFile.length()} bytes)")
+        logger.lifecycle(
+            "bsm_helper -> ${outFile.relativeTo(rootDir)} (${outFile.length()} bytes" +
+                (if (wantDebugTools) ", debug tools ON" else ", debug tools OFF") + ")"
+        )
     }
 }
 

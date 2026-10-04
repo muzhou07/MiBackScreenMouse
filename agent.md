@@ -20,7 +20,7 @@
 |---|---|
 | 项目 | 小米 17 Pro / ProMax「背屏鼠标」：背屏当触控板，驱动主屏指针 |
 | 包名 | `mz.mibackscreen.mouse` |
-| 版本 | `1.0.1`（versionCode 4），见 `app/build.gradle.kts` |
+| 版本 | `1.0.2`（versionCode 5），见 `app/build.gradle.kts` |
 | 技术栈 | Kotlin + Jetpack Compose(Material3)；助手是 C（NDK 交叉编译） |
 | 前提 | **必须 root**（KernelSU / Magisk），App 通过 `su -c` 起 root 助手 |
 | 许可证 | GPL-3.0（见 `LICENSE`） |
@@ -241,6 +241,11 @@ adb shell "su -c 'rm -f /data/local/tmp/bsm_helper /data/local/tmp/helper.log'"
     **禁止在会话里再注册一次**（会互相顶掉）。
 15. 检查更新用 `tag_name` 与 `BuildConfig.VERSION_NAME` 比较（忽略大小写与开头 `v`）；
     发新版必须把 release 标为 **Latest**，否则"检查更新"会指向旧版本。
+16. 助手的调试开关（`--no-auth` / `--tcp` / `--token` / `--no-grab`）由 `BSM_DEBUG_TOOLS` 宏控制，
+    **只有 debug 变体**才会带上（见 `buildRootHelper` 的 `wantDebugTools`）；正式包里这些开关
+    一律被拒绝，且**必须**拿到 `--uid`。
+17. 协议输入一律钳制（`MAX_MOVE` / `MAX_WHEEL`）；`V` 指令自报的 pid/uid 在能取到
+    `SO_PEERCRED` 时**被忽略**（存活检查以真实凭据为准）。
 
 ---
 
