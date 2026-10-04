@@ -26,8 +26,8 @@ android {
         applicationId = "mz.mibackscreen.mouse"
         minSdk = 35
         targetSdk = 37
-        versionCode = 6
-        versionName = "1.0.3"
+        versionCode = 7
+        versionName = "1.0.4"
     }
 
     signingConfigs {
@@ -129,6 +129,12 @@ val buildRootHelper = tasks.register("buildRootHelper") {
         val args = mutableListOf(
             clang.absolutePath,
             "-O2", "-std=c11", "-Wall", "-Wno-unused-parameter", "-Wno-unused-result",
+            // 加固：栈保护 / FORTIFY / PIE / RELRO+BIND_NOW / 格式化串检查
+            "-fstack-protector-strong",
+            "-U_FORTIFY_SOURCE", "-D_FORTIFY_SOURCE=2",
+            "-fPIE", "-pie",
+            "-Wl,-z,relro,-z,now",
+            "-Wformat", "-Wformat-security",
         )
         if (wantDebugTools) args += "-DBSM_DEBUG_TOOLS"
         args += listOf(srcFile.absolutePath, "-o", outFile.absolutePath)

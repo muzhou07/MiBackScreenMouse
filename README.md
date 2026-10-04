@@ -278,6 +278,8 @@ BLE 每秒能发的报告有限。把主页「蓝牙鼠标手感」里的`位移
 
 ## 版本
 
+**1.0.4** — Native 加固：助手的交叉编译参数补齐 **`-fstack-protector-strong`**（原来没开栈保护）、**`-D_FORTIFY_SOURCE=2`**，并显式声明 `-fPIE -pie`、`-Wl,-z,relro,-z,now`、`-Wformat -Wformat-security`。产物里已能查到 `__stack_chk_fail` 与 `*_chk` 系列符号，`GNU_RELRO` / `BIND_NOW` / 不可执行栈齐全。
+
 **1.0.3** — 两处小加固：助手释放改为**按内容 SHA-256 判定**是否需要重写（原来只比文件大小，新旧助手同大小时会漏更，安全修复可能到不了本地助手）；token 比较改成**恒时比较**，去掉理论上的 timing 侧信道。
 
 **1.0.2** — 继续加固（针对 1.0.1 的复审）：助手里的 `--no-auth` / `--tcp` / `--token` / `--no-grab` **只在 debug 构建中存在**（正式包编译期移除，并强制要求 `--uid`）；鼠标指令的位移与滚轮加了幅值上限（即使已鉴权也不接受极端值）；助手改为**以 `SO_PEERCRED` 为准**绑定 App 的 pid/uid 做存活检查，不再采信客户端自报的 `V`；构建脚本删掉了会误导维护者的 debug 签名 fallback。

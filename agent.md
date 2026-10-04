@@ -20,7 +20,7 @@
 |---|---|
 | 项目 | 小米 17 Pro / ProMax「背屏鼠标」：背屏当触控板，驱动主屏指针 |
 | 包名 | `mz.mibackscreen.mouse` |
-| 版本 | `1.0.3`（versionCode 6），见 `app/build.gradle.kts` |
+| 版本 | `1.0.4`（versionCode 7），见 `app/build.gradle.kts` |
 | 技术栈 | Kotlin + Jetpack Compose(Material3)；助手是 C（NDK 交叉编译） |
 | 前提 | **必须 root**（KernelSU / Magisk），App 通过 `su -c` 起 root 助手 |
 | 许可证 | GPL-3.0（见 `LICENSE`） |
@@ -249,6 +249,14 @@ adb shell "su -c 'rm -f /data/local/tmp/bsm_helper /data/local/tmp/helper.log'"
 18. 释放助手按**内容 SHA-256** 判定是否重写（`RootHelper.ensureInstalled`）：
     只比文件大小会漏掉"同大小不同内容"的情况，安全修复可能到不了本地助手。
 19. token 比较用 `token_eq()`（恒时比较），不要改回 `strcmp`。
+20. 助手必须带 Native 加固编译（`buildRootHelper` 的固定参数）：`-fstack-protector-strong`、
+    `-D_FORTIFY_SOURCE=2`、`-fPIE -pie`、`-Wl,-z,relro,-z,now`、`-Wformat -Wformat-security`。
+    验收方式（产物里应能查到）：
+    ```bash
+    llvm-nm -D --undefined-only libbsm_helper.so | grep -e stack_chk -e _chk
+    llvm-readelf -l libbsm_helper.so | grep -e GNU_RELRO -e GNU_STACK      # R / RW
+    llvm-readelf -d libbsm_helper.so | grep -e BIND_NOW -e FLAGS            # NOW PIE
+    ```
 
 ---
 
