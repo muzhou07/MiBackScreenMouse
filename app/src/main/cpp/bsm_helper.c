@@ -511,12 +511,23 @@ static int clamp_i(int v, int lo, int hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+/* 恒时比较 token：长度不等也算失败，其余逐字节异或累加（避免 timing 侧信道） */
+static bool token_eq(const char *a, const char *b) {
+    size_t la = strlen(a), lb = strlen(b);
+    size_t diff = la ^ lb;
+    size_t n = la < lb ? la : lb;
+    for (size_t i = 0; i < n; i++) {
+        diff |= (size_t)(unsigned char)(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
+
 static void handle_client_line(char *line) {
     /* 未鉴权的连接只接受 A <token>，其它一律断开 */
     if (!g_authed) {
         char *p = line + 1;
         while (*p == ' ') p++;
-        if (line[0] == 'A' && g_token[0] != '\0' && strcmp(p, g_token) == 0) {
+        if (line[0] == 'A' && g_token[0] != '\0' && token_eq(p, g_token)) {
             g_authed = true;
             logf_("客户端鉴权通过");
             handshake();

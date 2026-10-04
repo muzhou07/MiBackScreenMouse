@@ -52,7 +52,12 @@ object RootHelper {
                     Logs.d("Helper", "APK 内找不到 $APK_ENTRY")
                     return null
                 }
-                if (!out.exists() || out.length() != entry.size) {
+                // 比内容哈希而不是只比大小：大小相同但内容不同的新助手也必须覆盖，
+                // 否则安全修复可能不会随 APK 更新同步到本地助手。
+                val same = out.exists() &&
+                    out.length() == entry.size &&
+                    sha256(zip.getInputStream(entry)) == sha256(out.inputStream())
+                if (!same) {
                     zip.getInputStream(entry).use { input ->
                         out.outputStream().use { input.copyTo(it) }
                     }
@@ -65,6 +70,22 @@ object RootHelper {
             Logs.d("Helper", "释放助手失败: ${t.message}")
             null
         }
+    }
+
+    /** 流内容的 SHA-256（十六进制）；出错返回 null（视为不一致，宁可重写一次）。 */
+    private fun sha256(input: java.io.InputStream): String? = try {
+        input.use {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            val buf = ByteArray(8 * 1024)
+            while (true) {
+                val n = it.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+            }
+            md.digest().joinToString("") { b -> "%02x".format(b) }
+        }
+    } catch (t: Throwable) {
+        null
     }
 
     /** 以 root 启动助手守护进程。 */
