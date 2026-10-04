@@ -20,7 +20,7 @@
 |---|---|
 | 项目 | 小米 17 Pro / ProMax「背屏鼠标」：背屏当触控板，驱动主屏指针 |
 | 包名 | `mz.mibackscreen.mouse` |
-| 版本 | `1.0.0`（versionCode 3），见 `app/build.gradle.kts` |
+| 版本 | `1.0.1`（versionCode 4），见 `app/build.gradle.kts` |
 | 技术栈 | Kotlin + Jetpack Compose(Material3)；助手是 C（NDK 交叉编译） |
 | 前提 | **必须 root**（KernelSU / Magisk），App 通过 `su -c` 起 root 助手 |
 | 许可证 | GPL-3.0（见 `LICENSE`） |
@@ -35,7 +35,6 @@
 | `core/` | 会话与提权 | `BackScreenController`(启停/投放/状态)、`HelperClient`(socket+鉴权)、`RootHelper`(助手进程)、`RootShell`(su)、`AppPrefs`、`Logs`、`WallpaperBackground`、`MouseSink`(输出抽象)、`BtHidMouse`(BLE HID 鼠标)、`BtMouseMode`(蓝牙模式唯一持有者) |
 | `touchpad/` | 背屏上的那块面 | `TouchpadActivity`(纯黑 + 触点同步)、`TouchpadGestureEngine`(手势→鼠标指令)、`TouchIndicatorView` |
 | `app/src/main/cpp/bsm_helper.c` | root 助手 | EVIOCGRAB 独占触摸 + uinput 虚拟鼠标 + socket 协议（单文件） |
-| `btprobe/` | 蓝牙鼠标独立测试模块 | 自己的包名 `mz.mibackscreen.btprobe`，单独验证 HID 注册/广播/报告，不参与正式包 |
 
 ---
 
@@ -219,11 +218,13 @@ adb shell "su -c 'rm -f /data/local/tmp/bsm_helper /data/local/tmp/helper.log'"
    **锁屏即会话结束**，不要引入任何「锁屏后再唤醒 / 搬移重建」的补救逻辑。
 5. 助手退出有三重兜底，改动时别破坏：收到 `Q`、`app_alive()`（pid + **uid** 校验，防 pid 复用）、
    10 秒无连接自动退出；`client_disconnected()` 必须释放 `EVIOCGRAB`。
-6. **协议 v3 必须先鉴权**：客户端连上后第一条必须是 `A <token>`，助手只有鉴权通过才会
-   `grab_touch(true)` 并回 `K/H/S`；3 秒不给 token 直接断开。token 每会话随机生成
-   （`RootHelper.newSessionToken()`），通过 `su -c "… --token <hex>"` 传给助手。
-   **未指定 `--token` 时助手不校验**，这是留给手动调试的口子。
-7. 触点帧只有在助手独占设备、且连接**已鉴权**时才读（`g_touch_fd >= 0 && g_authed`），
+6. **协议 v4：控制口只开 App 私有目录内的文件系统 socket**（`<filesDir>/bsm.sock`，0600、属主为本 App），
+   助手侧用 `SO_PEERCRED` **强制校验对端 uid**（`--uid`），不符直接拒绝且**不顶掉合法连接**；
+   抽象命名空间与 TCP 口都不再默认监听（`--tcp` 仅手动调试）。
+7. **token 只走一次性文件**：App 写 `<filesDir>/.bsm-token`（0600）→ 助手 `--token-file` 读取后立刻
+   `unlink`；**token 绝不能出现在命令行**（`su -c … --token` 会让同机能读 ps 的角色拿到它）。
+   没 token 时助手**拒绝以守护进程启动**（调试必须显式 `--no-auth`）。
+8. 触点帧只有在助手独占设备、且连接**已鉴权**时才读（`g_touch_fd >= 0 && g_authed`），
    避免未鉴权的连接偷看触点数据。
 8. 指针位移的余数必须在**输出域**扣减（`TouchpadGestureEngine.emitMove`），
    否则残差指数放大 → 指针数值爆炸、疯狂抖动。
@@ -262,7 +263,8 @@ adb shell "su -c 'rm -f /data/local/tmp/bsm_helper /data/local/tmp/helper.log'"
 1. 改版本号：`app/build.gradle.kts` 的 `versionCode` / `versionName`；
 2. 构建正式包：`wsl …/wsl_build.sh assembleRelease` → `artifacts/app-release.apk`。
    正式签名读仓库根目录的 `keystore.properties` + `release.jks`（都已 gitignore，**不入库**）；
-   **缺这两个文件时 release 会退回 debug 签名，别把那种包发出去**。
+   **缺这两个文件时 `assembleRelease` 会直接失败**（`assembleDebug` 不受影响）——
+   这是为了防止误把 debug 签名的包当正式包发出去。
    校验：`apksigner verify --verbose --print-certs artifacts/app-release.apk` →
    应输出 `Verifies`，指纹 `85:02:6F:…:8E:3F`，DN `CN=muzhou07, OU=muzhou07, O=muzhou07, C=CN`，RSA 4096，v2 方案；
 3. 调试包用 `assembleDebug`（debug 签名）。注意：正式包与调试包签名不同，
@@ -311,10 +313,19 @@ git ls-files | wc -l ; git status --ignored ; git add -A --dry-run
 .\adb\adb.exe shell pm grant mz.mibackscreen.mouse android.permission.BLUETOOTH_ADVERTISE
 # 已配对设备 / HID 服务状态
 .\adb\adb.exe shell "dumpsys bluetooth_manager | grep -E 'Bonded devices|HidDeviceService'"
+```
 
-# 单独编蓝牙测试台（独立包名，不动正式包）
-wsl bash _tools/wsl_build.sh :btprobe:assembleDebug
-.\adb\adb.exe install -r artifacts\btprobe-debug.apk
+控制口安全自检（会话运行中做）：
+
+```bash
+# 1) 助手命令行里不应出现 token（只该有 --sock/--uid/--token-file）
+.\adb\adb.exe shell "ps -A -o USER,ARGS | grep bsm_helper"
+# 2) 控制口 socket 应为 0600 且属主是本 App
+.\adb\adb.exe shell "su -c 'ls -l /data/data/mz.mibackscreen.mouse/files/bsm.sock'"
+# 3) 不该再监听 127.0.0.1:38472
+.\adb\adb.exe shell "cat /proc/net/tcp | grep -i 9658"
+# 4) 负向测试：换一个 uid 去连（这里 adb shell 常是 root=0），应被拒绝且不影响现有会话
+.\adb\adb.exe shell "echo '' | toybox nc -U /data/data/mz.mibackscreen.mouse/files/bsm.sock"
 ```
 
 ---

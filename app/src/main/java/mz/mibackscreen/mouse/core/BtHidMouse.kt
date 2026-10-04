@@ -64,6 +64,14 @@ class BtHidMouse(
     val isConnected: Boolean get() = device != null
     val hostAddress: String? get() = device?.address
 
+    /** 主机地址的打码形式（只留首尾两段）：界面与日志都用它，避免完整 MAC 外泄。 */
+    val hostAddressMasked: String? get() = device?.address?.let { maskAddress(it) }
+
+    private fun maskAddress(address: String): String {
+        val parts = address.split(':')
+        return if (parts.size == 6) "${parts[0]}:${parts[1]}:••:••:••:${parts[5]}" else "••"
+    }
+
     private val callback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
             // pluggedDevice：注册时主机已经连着的情况（此时不会再有 onConnectionStateChanged）
@@ -72,12 +80,15 @@ class BtHidMouse(
             } else {
                 device = null
             }
-            onState("注册状态变化 registered=$registered plug=${pluggedDevice?.address ?: "-"} 已连接=${device != null}")
+            onState(
+                "注册状态变化 registered=$registered plug=${pluggedDevice?.let { maskAddress(it.address) } ?: "-"} " +
+                    "已连接=${device != null}",
+            )
         }
 
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
             this@BtHidMouse.device = if (state == BluetoothProfile.STATE_CONNECTED) device else null
-            onState("主机连接状态 ${device.address} state=$state")
+            onState("主机连接状态 ${maskAddress(device.address)} state=$state")
         }
 
         override fun onGetReport(device: BluetoothDevice, type: Byte, id: Byte, bufferSize: Int) {
@@ -155,7 +166,7 @@ class BtHidMouse(
     fun disconnect() {
         val d = device ?: return
         hid?.disconnect(d)
-        onState("已请求断开 ${d.address}")
+        onState("已请求断开 ${maskAddress(d.address)}")
     }
 
     override fun move(dx: Int, dy: Int) {

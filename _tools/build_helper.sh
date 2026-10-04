@@ -1,8 +1,8 @@
 #!/bin/bash
 # 交叉编译 root 助手为 libbsm_helper.so（放进 jniLibs，随 APK 打包）
 set -euo pipefail
-SRC=/mnt/d/Code/VSCode/Android/MiBackScreenMouse
-NDK=/home/muzhou/android-sdk/ndk/29.0.14206865
+SRC="${BSM_SRC:-$(cd "$(dirname "$0")/.." && pwd)}"   # 工程根目录（可用 BSM_SRC 覆盖）
+NDK="${ANDROID_NDK_HOME:-${ANDROID_SDK_ROOT:-$HOME/android-sdk}/ndk/29.0.14206865}"
 CC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang
 OUT=$SRC/app/src/main/jniLibs/arm64-v8a
 

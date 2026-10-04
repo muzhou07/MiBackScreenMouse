@@ -74,6 +74,11 @@ class AppPrefs(context: Context) {
         get() = sp.getBoolean(KEY_USE_WALLPAPER, false)
         set(value) = sp.edit().putBoolean(KEY_USE_WALLPAPER, value).apply()
 
+    /** 诊断模式：开启后日志才会记录触摸坐标（默认关闭，避免坐标进日志后被导出外传）。 */
+    var diagMode: Boolean
+        get() = sp.getBoolean(KEY_DIAG_MODE, false)
+        set(value) = sp.edit().putBoolean(KEY_DIAG_MODE, value).apply()
+
     /** 顶栏不透明度（0~100，%）。 */
     var alphaTop: Int
         get() = sp.getInt(KEY_ALPHA_TOP, 95)
@@ -102,6 +107,7 @@ class AppPrefs(context: Context) {
         private const val KEY_BT_FLUSH_MS = "bt_flush_ms"
         private const val KEY_BT_SMOOTH = "bt_smooth"
         private const val KEY_USE_WALLPAPER = "use_wallpaper"
+        private const val KEY_DIAG_MODE = "diag_mode"
         private const val KEY_ALPHA_TOP = "alpha_top"
         private const val KEY_ALPHA_NAV = "alpha_nav"
         private const val KEY_ALPHA_CARD = "alpha_card"

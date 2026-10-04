@@ -2,7 +2,7 @@
 # 构建产物自检：确认“背屏强制接管”相关代码/清单项已彻底从 APK 中消失
 set -uo pipefail
 
-APK=/mnt/d/Code/VSCode/Android/MiBackScreenMouse/artifacts/app-debug.apk
+APK="${BSM_APK:-$(cd "$(dirname "$0")/.." && pwd)/artifacts/app-debug.apk}"
 B="$HOME/bsm"
 
 echo "=== 合并后的 AndroidManifest 关键项 ==="

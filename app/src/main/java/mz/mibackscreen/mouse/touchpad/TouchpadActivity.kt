@@ -77,6 +77,7 @@ class TouchpadActivity : Activity() {
         )
         // 连接 root 助手：触点帧 → 触点显示 + 手势 → uinput 鼠标（自带断线重连）
         val c = HelperClient(
+            this,
             onFrame = { frame ->
                 engine?.onFrame(frame)
                 indicator.post { syncIndicator(frame) }
@@ -189,7 +190,7 @@ class TouchpadActivity : Activity() {
             MotionEvent.ACTION_DOWN -> {
                 val id = ev.getPointerId(0)
                 indicator.onPointerDown(id, ev.getX(0), ev.getY(0))
-                Logs.d("Touchpad", "DOWN id=$id (${ev.getX(0).toInt()}, ${ev.getY(0).toInt()})")
+                Logs.d("Touchpad", "DOWN id=$id (${ev.getX(0).toInt()}, ${ev.getY(0).toInt()})".takeIf { AppPrefs(this).diagMode } ?: "DOWN id=$id")
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
@@ -215,7 +216,7 @@ class TouchpadActivity : Activity() {
             MotionEvent.ACTION_UP -> {
                 val id = ev.getPointerId(0)
                 indicator.onPointerUp(id, ev.getX(0), ev.getY(0))
-                Logs.d("Touchpad", "UP (${ev.getX(0).toInt()}, ${ev.getY(0).toInt()})")
+                Logs.d("Touchpad", "UP (${ev.getX(0).toInt()}, ${ev.getY(0).toInt()})".takeIf { AppPrefs(this).diagMode } ?: "UP")
             }
 
             MotionEvent.ACTION_CANCEL -> {
@@ -234,11 +235,13 @@ class TouchpadActivity : Activity() {
         val now = SystemClock.uptimeMillis()
         if (ev.actionMasked == MotionEvent.ACTION_MOVE && now - lastLogAt > 2000) {
             lastLogAt = now
-            val sb = StringBuilder()
-            for (index in 0 until ev.pointerCount) {
-                sb.append("p$index=(${ev.getX(index).toInt()},${ev.getY(index).toInt()}) ")
+            if (AppPrefs(this).diagMode) {
+                val sb = StringBuilder()
+                for (index in 0 until ev.pointerCount) {
+                    sb.append("p$index=(${ev.getX(index).toInt()},${ev.getY(index).toInt()}) ")
+                }
+                Logs.d("Touchpad", "MOVE $sb")
             }
-            Logs.d("Touchpad", "MOVE $sb")
         }
     }
 
@@ -248,7 +251,9 @@ class TouchpadActivity : Activity() {
         client?.close()
         engine = null
         client = null
-        indicator.reset()
+        // 幽灵实例会在 onCreate 里提前 finish（那时 indicator 还没建），这里必须判空，
+        // 否则 onDestroy 抛 UninitializedPropertyAccessException 把 App 崩掉
+        if (this::indicator.isInitialized) indicator.reset()
         BackScreenController.setTouchpadVisible(false)
         BackScreenController.detachTouchpadActivity()
         Logs.d("Touchpad", "onDestroy isFinishing=$isFinishing")

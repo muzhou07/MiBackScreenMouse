@@ -9,9 +9,15 @@ object RootHelper {
 
     private const val APK_ENTRY = "lib/arm64-v8a/libbsm_helper.so"
 
-    /** 与 bsm_helper.c 里保持一致 */
-    const val ABSTRACT_NAME = "bsm-helper"
-    const val TCP_PORT = 38472
+    /** 控制口 socket（App 私有目录内，权限 0600）：别的 App 既连不上、也抢不到 */
+    const val SOCKET_NAME = "bsm.sock"
+
+    /** 一次性 token 文件（0600）：token 不走命令行，助手读完立即删除 */
+    private const val TOKEN_NAME = ".bsm-token"
+
+    fun socketFile(context: Context): File = File(context.filesDir, SOCKET_NAME)
+
+    private fun tokenFile(context: Context): File = File(context.filesDir, TOKEN_NAME)
 
     /** 本次会话的鉴权串：助手只接受带它的客户端，防止同机其它 App 抢占控制口 */
     @Volatile
@@ -70,17 +76,44 @@ object RootHelper {
         }
         val helper = ensureInstalled(context) ?: return false
         val token = sessionToken
-        val cmd = if (token.isEmpty()) {
-            "${helper.absolutePath} --daemon"
-        } else {
-            "${helper.absolutePath} --daemon --token $token"
+        if (token.isEmpty()) {
+            Logs.d("Helper", "没有会话 token，拒绝启动助手")
+            return false
         }
+        // token 写进私有文件（0600），助手读完即删 —— 命令行里不再出现 token
+        val tokenFile = tokenFile(context)
+        try {
+            tokenFile.writeText(token)
+            tokenFile.setReadable(false, false)
+            tokenFile.setReadable(true, true)
+            tokenFile.setWritable(false, false)
+            tokenFile.setWritable(true, true)
+        } catch (t: Throwable) {
+            Logs.d("Helper", "写入 token 文件失败: ${t.message}")
+            return false
+        }
+        val cmd = "${helper.absolutePath} --daemon" +
+            " --sock ${socketFile(context).absolutePath}" +
+            " --uid ${android.os.Process.myUid()}" +
+            " --token-file ${tokenFile.absolutePath}"
         return try {
             val p = ProcessBuilder("su", "-c", cmd)
                 .redirectErrorStream(true)
                 .start()
             process = p
             running = true
+            // 助手已读到 token（一次性文件），稍后删掉，避免长期留在磁盘上
+            Thread {
+                try {
+                    Thread.sleep(2000)
+                } catch (_: InterruptedException) {
+                }
+                tokenFile.delete()
+            }.also {
+                it.isDaemon = true
+                it.name = "bsm-token-cleanup"
+                it.start()
+            }
             Thread {
                 try {
                     p.inputStream.bufferedReader().forEachLine { Logs.d("Helper", it) }
@@ -114,6 +147,8 @@ object RootHelper {
         process = null
         running = false
         if (context == null) return
+        tokenFile(context).delete()
+        socketFile(context).delete()
         killAllHelpers()
         val left = RootShell.run("pidof bsm_helper").output.trim()
         Logs.d("Helper", if (left.isEmpty()) "助手已完全退出（无残留进程）" else "助手仍有残留：pid=$left")

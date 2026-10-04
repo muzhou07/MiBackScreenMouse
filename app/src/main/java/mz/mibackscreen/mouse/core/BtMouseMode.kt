@@ -19,6 +19,9 @@ object BtMouseMode {
     val isConnected: Boolean get() = mouse?.isConnected == true
     val hostAddress: String? get() = mouse?.hostAddress
 
+    /** 界面用：打码后的主机地址 */
+    val hostAddressMasked: String? get() = mouse?.hostAddressMasked
+
     fun addListener(listener: (String) -> Unit) {
         listeners += listener
     }

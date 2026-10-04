@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- root 助手通过本地 socket 与 App 通信（127.0.0.1 TCP 回环） -->
+    <!-- 检查更新（GitHub API）需要联网；与助手的通信走 App 私有目录内的 socket，不用网络 -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- 蓝牙鼠标模式：把本机蓝牙变成 HID 鼠标（运行时授权） -->
@@ -36,14 +36,14 @@
 
         <!--
             触控板：纯黑界面 + 触点指示。
-            exported=true + miui.rear.policy 用于通过 root 的 am start 投放（与
-            MiRearScreenSwitcher / back-screen-wallpaper 做法一致，不杀进程、不改系统设置）。
+            exported=false：只允许本应用与 root（su 的 am start 不受导出限制）拉起，别的 App 拉不起来。
+            miui.rear.policy 用于投放（与 MiRearScreenSwitcher / back-screen-wallpaper 做法一致）。
         -->
         <activity
             android:name=".touchpad.TouchpadActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboardHidden|uiMode|navigation"
             android:excludeFromRecents="true"
-            android:exported="true"
+            android:exported="false"
             android:launchMode="singleInstance"
             android:taskAffinity="mz.mibackscreen.mouse.touchpad"
             android:theme="@style/Theme.BackScreenMouse.Touchpad">

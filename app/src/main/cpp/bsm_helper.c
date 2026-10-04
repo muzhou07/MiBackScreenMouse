@@ -1,7 +1,8 @@
 /*
  * bsm_helper —— 背屏鼠标的 root 助手。
  * 独占背屏触摸设备、创建 uinput 虚拟鼠标，并通过本地 socket 与 App 交换触点帧 / 鼠标指令。
- * 协议为文本行，详见 README「通信协议」；用 --token 启动时客户端须先发 `A <token>` 鉴权。
+ * 协议为文本行，详见 README「通信协议」；控制口是 App 私有目录内的 unix socket（0600 且校验对端 uid），
+ * 客户端连上后须先发 `A <token>` 鉴权（token 由 --token-file 传入、读完即删，不经过命令行）。
  */
 
 #define _GNU_SOURCE
@@ -29,11 +30,13 @@
 #include <netinet/in.h>
 
 #define ABS_SCALE 100                 /* 背屏触摸坐标是像素的 100 倍 */
-#define DEFAULT_TCP_PORT 38472
-#define ABSTRACT_NAME "bsm-helper"
 #define MAX_SLOTS 16
 #define SEND_BUF 4096
-#define PROTO_VER 3                   /* 协议版本：v3 起客户端须先过 A <token> 鉴权 */
+#define SOCK_PATH_MAX 200             /* 文件系统 socket 路径上限 */
+#define PROTO_VER 4                   /* v4：控制口改为 App 私有目录内 socket，并强制校验对端 uid */
+
+/* 控制口默认只开文件系统 socket（--sock 指定，位于 App 私有目录）；
+ * TCP 口仅在显式传 --tcp PORT 时开启，供手动调试。 */
 
 static const char *TAG = "bsm-helper";
 
@@ -48,7 +51,12 @@ static bool g_quit = false;   /* 收到 Q 指令：立刻退出 */
 static int g_app_pid = -1;    /* App 主进程 pid（握手上报） */
 static int g_app_uid = -1;    /* App 主进程 uid（防 pid 复用误判） */
 
-/* 客户端鉴权串（--token 指定；空 = 不校验）：防止同机其它 App 抢占控制口 */
+/* 控制口：文件系统 socket 路径（--sock）与合法客户端 uid（--uid，-1=不限制，仅调试） */
+static char g_sock_path[SOCK_PATH_MAX] = {0};
+static int g_peer_uid = -1;
+static bool g_no_auth = false;   /* --no-auth：显式关闭 token 校验（仅调试用） */
+
+/* 客户端鉴权串（--token / --token-file 指定）：防止同机其它 App 抢占控制口 */
 static char g_token[65] = {0};
 static bool g_authed = false;
 static time_t g_auth_deadline = 0;
@@ -356,21 +364,34 @@ static void handle_touch_events(const struct input_event *evs, int count) {
 
 /* ------------------------------------------------------------------ socket / 协议 */
 
-static int setup_unix_abstract(void) {
+/*
+ * 在 App 私有目录里建文件系统 socket：
+ *   - 路径由 --sock 指定（<filesDir>/bsm.sock，目录本身 0700 属主为 App）
+ *   - socket 建好后 chown 给 App、chmod 0600 —— 别的 App 既连不上、也无法抢先 bind
+ *   - 抽象命名空间已被弃用：它没有文件系统权限，任何 App 都能抢占并冒充助手骗走 token
+ */
+static int setup_unix_socket(const char *path) {
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd < 0) return -1;
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof addr);
     addr.sun_family = AF_UNIX;
-    /* 抽象命名空间：首字节为 \0，不涉及文件系统权限 */
-    addr.sun_path[0] = '\0';
-    snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, "%s", ABSTRACT_NAME);
-    socklen_t len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + strlen(ABSTRACT_NAME));
-    if (bind(fd, (struct sockaddr *)&addr, len) < 0 || listen(fd, 1) < 0) {
-        logf_("抽象 unix socket 监听失败: %s", strerror(errno));
+    if (strlen(path) >= sizeof(addr.sun_path)) {
+        logf_("socket 路径过长: %s", path);
         close(fd);
         return -1;
     }
+    snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path);
+    unlink(path);   /* 清掉上次残留 */
+    if (bind(fd, (struct sockaddr *)&addr, sizeof addr) < 0 || listen(fd, 1) < 0) {
+        logf_("socket 监听失败(%s): %s", path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    if (g_peer_uid >= 0 && chown(path, (uid_t)g_peer_uid, (gid_t)g_peer_uid) < 0) {
+        logf_("socket chown 失败: %s", strerror(errno));
+    }
+    if (chmod(path, 0600) < 0) logf_("socket chmod 失败: %s", strerror(errno));
     return fd;
 }
 
@@ -427,6 +448,22 @@ static void handshake(void) {
 static void accept_client(int fd) {
     int c = accept(fd, NULL, NULL);
     if (c < 0) return;
+
+    /* 先验身份：uid 不符的连接直接拒绝，且绝不顶掉合法连接 */
+    struct ucred cred;
+    socklen_t clen = sizeof cred;
+    int peer_uid = -1;
+    int peer_pid = -1;
+    if (getsockopt(c, SOL_SOCKET, SO_PEERCRED, &cred, &clen) == 0) {
+        peer_uid = (int)cred.uid;
+        peer_pid = (int)cred.pid;
+    }
+    if (g_peer_uid >= 0 && peer_uid >= 0 && peer_uid != g_peer_uid) {
+        logf_("拒绝连接：对端 uid=%d，期望 uid=%d", peer_uid, g_peer_uid);
+        close(c);
+        return;
+    }
+
     if (g_client >= 0) {
         /* 新连接顶替旧连接：App 重连时旧 fd 可能还没被内核回收 */
         logf_("新连接顶替旧连接 (旧 fd=%d)", g_client);
@@ -435,14 +472,7 @@ static void accept_client(int fd) {
         g_send_len = 0;
     }
     g_client = c;
-    struct ucred cred;
-    socklen_t clen = sizeof cred;
-    if (getsockopt(c, SOL_SOCKET, SO_PEERCRED, &cred, &clen) == 0 && (int)cred.uid >= 0) {
-        logf_("新连接(fd=%d pid=%d uid=%d)", c, cred.pid, cred.uid);
-    } else {
-        /* TCP 回环拿不到对端凭据（uid=-1），鉴权完全依赖 token */
-        logf_("新连接(fd=%d)", c);
-    }
+    logf_("新连接(fd=%d pid=%d uid=%d)", c, peer_pid, peer_uid);
     g_authed = false;
     g_send_len = 0;
     /* 设了 token 就先等鉴权，通过后才独占触摸并握手 */
@@ -525,6 +555,7 @@ static void cleanup(void) {
         ioctl(g_uinput_fd, UI_DEV_DESTROY);
         close(g_uinput_fd);
     }
+    if (g_sock_path[0] != '\0') unlink(g_sock_path);   /* 收工顺手删掉控制口文件 */
     g_client = g_unix_listen = g_tcp_listen = g_touch_fd = g_uinput_fd = -1;
 }
 
@@ -606,15 +637,22 @@ static int run_daemon(const char *device, uint16_t port, bool no_grab) {
     g_uinput_fd = create_mouse();
     if (g_uinput_fd < 0) return 5;
 
-    g_unix_listen = setup_unix_abstract();
-    g_tcp_listen = setup_tcp(port);
-    if (g_unix_listen < 0 && g_tcp_listen < 0) {
-        logf_("两种 socket 都监听失败");
+    if (g_sock_path[0] == '\0') {
+        logf_("缺少 --sock（控制口路径），拒绝启动");
         cleanup();
         return 6;
     }
-    logf_("就绪: unix=@%s tcp=127.0.0.1:%u%s%s", ABSTRACT_NAME, port,
-          no_grab ? " (不独占触摸)" : "", g_token[0] != '\0' ? " (需 token 鉴权)" : " (未设 token)");
+    g_unix_listen = setup_unix_socket(g_sock_path);
+    g_tcp_listen = (port != 0) ? setup_tcp(port) : -1;   /* TCP 仅手动调试时开启 */
+    if (g_unix_listen < 0) {
+        logf_("控制口 socket 监听失败");
+        cleanup();
+        return 6;
+    }
+    logf_("就绪: sock=%s%s%s%s", g_sock_path,
+          g_tcp_listen >= 0 ? " (TCP 调试口已开)" : "",
+          no_grab ? " (不独占触摸)" : "",
+          g_token[0] != '\0' ? " (需 token 鉴权)" : "");
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -719,12 +757,35 @@ static int run_daemon(const char *device, uint16_t port, bool no_grab) {
 
 /* ------------------------------------------------------------------ main */
 
+/* 从一次性文件读 token（App 写入、权限 0600，读完立即删除）：避免 token 出现在命令行里 */
+static bool read_token_file(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        logf_("读取 token 文件失败(%s): %s", path, strerror(errno));
+        return false;
+    }
+    char buf[128] = {0};
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    unlink(path);
+    if (n == 0) return false;
+    char *s = buf;
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+    char *e = s + strlen(s);
+    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) *--e = '\0';
+    if (*s == '\0') return false;
+    snprintf(g_token, sizeof g_token, "%s", s);
+    return true;
+}
+
 int main(int argc, char **argv) {
     const char *device = NULL;
-    uint16_t port = DEFAULT_TCP_PORT;
+    const char *token_file = NULL;
+    uint16_t port = 0;              /* 0 = 不开 TCP：默认只开 App 私有目录内的文件系统 socket */
     bool no_grab = false;
     bool daemon = false;
     bool debug = false;
+    bool no_auth = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--list") == 0) {
@@ -738,17 +799,26 @@ int main(int argc, char **argv) {
             no_grab = true;
         } else if (strcmp(argv[i], "--debug") == 0) {
             debug = true;
+        } else if (strcmp(argv[i], "--no-auth") == 0) {
+            no_auth = true;                 /* 仅调试：显式关闭鉴权 */
         } else if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
             device = argv[++i];
+        } else if (strcmp(argv[i], "--sock") == 0 && i + 1 < argc) {
+            snprintf(g_sock_path, sizeof g_sock_path, "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--uid") == 0 && i + 1 < argc) {
+            g_peer_uid = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--token-file") == 0 && i + 1 < argc) {
+            token_file = argv[++i];
         } else if (strcmp(argv[i], "--tcp") == 0 && i + 1 < argc) {
-            port = (uint16_t)atoi(argv[++i]);
+            port = (uint16_t)atoi(argv[++i]);   /* 仅手动调试 */
         } else if (strcmp(argv[i], "--token") == 0 && i + 1 < argc) {
-            snprintf(g_token, sizeof g_token, "%s", argv[++i]);
+            snprintf(g_token, sizeof g_token, "%s", argv[++i]);   /* 仅手动调试 */
         } else {
             fprintf(stderr,
-                    "用法: %s [--daemon] [--list] [--selftest] [--device PATH] [--tcp PORT]"
-                    " [--token HEX] [--no-grab]\n",
-                    argv[0]);
+                    "用法: %s --daemon --sock PATH --uid N [--token-file PATH]\n"
+                    "      %s [--list] [--selftest]\n"
+                    "调试: [--device PATH] [--tcp PORT] [--token HEX] [--no-auth] [--no-grab] [--debug]\n",
+                    argv[0], argv[0]);
             return 1;
         }
     }
@@ -757,8 +827,23 @@ int main(int argc, char **argv) {
         fprintf(stderr, "需要 --daemon / --list / --selftest 之一\n");
         return 1;
     }
+
+    /* token 优先从一次性文件读（App 的正式路径）；命令行 --token 只在手动调试时用 */
+    if (token_file != NULL && !read_token_file(token_file)) {
+        fprintf(stderr, "读取 token 文件失败: %s\n", token_file);
+        return 1;
+    }
+    if (g_token[0] == '\0' && !no_auth) {
+        fprintf(stderr, "拒绝在无 token 的情况下运行（调试请显式加 --no-auth）\n");
+        logf_("拒绝启动：无 token 且未加 --no-auth");
+        return 1;
+    }
+    if (no_auth) logf_("警告：--no-auth 已关闭鉴权，仅用于调试");
+    if (g_peer_uid < 0) logf_("警告：未指定 --uid，不限制客户端 uid（仅调试）");
+
     g_daemon = true;
     g_no_grab = no_grab;
     g_debug = debug;
+    g_no_auth = no_auth;
     return run_daemon(device, port, no_grab);
 }

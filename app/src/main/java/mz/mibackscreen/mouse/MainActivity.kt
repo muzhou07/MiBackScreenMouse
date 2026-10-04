@@ -103,7 +103,7 @@ private fun hasBtPermissions(context: Context): Boolean = BT_PERMISSIONS.all {
 /** 蓝牙鼠标模式的状态文字（供界面显示）。 */
 private fun btStatusText(): String = when {
     !BtMouseMode.isOn -> "未开启"
-    BtMouseMode.isConnected -> "已连接主机：${BtMouseMode.hostAddress ?: "?"}"
+    BtMouseMode.isConnected -> "已连接主机：${BtMouseMode.hostAddressMasked ?: "?"}"
     BtMouseMode.isAdvertising -> "已开启，等待主机连接"
     else -> "已注册，正在准备广播…"
 }
@@ -418,6 +418,8 @@ private fun HomeTab(
 private fun LogsTab(topPad: Dp) {
     val logs = Logs.lines
     val context = LocalContext.current
+    val prefs = remember { AppPrefs(context) }
+    var diag by remember { mutableStateOf(prefs.diagMode) }
 
     Column(
         modifier = Modifier
@@ -429,6 +431,21 @@ private fun LogsTab(topPad: Dp) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(onClick = { Logs.clear() }) { Text("清空日志") }
                 OutlinedButton(onClick = { exportLogs(context) }) { Text("导出日志") }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("诊断模式（记录触摸坐标）", style = MaterialTheme.typography.bodySmall)
+                Switch(
+                    checked = diag,
+                    onCheckedChange = {
+                        diag = it
+                        prefs.diagMode = it
+                    },
+                )
             }
             HorizontalDivider()
             Text(
@@ -580,7 +597,12 @@ private fun SettingsTab(topPad: Dp) {
             confirmButton = {
                 TextButton(
                     onClick = {
-                        openUrl(context, info.downloadUrl)
+                        if (isTrustedDownloadUrl(info.downloadUrl)) {
+                            openUrl(context, info.downloadUrl)
+                        } else {
+                            Logs.d("Update", "下载地址不可信，已拦截: ${info.downloadUrl}")
+                            Toast.makeText(context, "下载地址不可信，已拦截", Toast.LENGTH_LONG).show()
+                        }
                         updateInfo = null
                     },
                 ) { Text("下载更新") }
@@ -695,6 +717,16 @@ private fun fetchLatestRelease(): UpdateInfo? {
 private fun sameVersion(a: String, b: String): Boolean =
     a.trim().removePrefix("v").removePrefix("V")
         .equals(b.trim().removePrefix("v").removePrefix("V"), ignoreCase = true)
+
+/** 更新下载地址白名单：只放行 https + GitHub 官方域名，避免被诱导打开任意 scheme/站点。 */
+private fun isTrustedDownloadUrl(url: String): Boolean {
+    val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
+    if (!uri.scheme.equals("https", ignoreCase = true)) return false
+    val host = uri.host?.lowercase() ?: return false
+    return host == "github.com" ||
+        host == "codeload.github.com" ||
+        host.endsWith(".githubusercontent.com")
+}
 
 /** 用系统浏览器打开链接。 */
 private fun openUrl(context: Context, url: String) {
@@ -820,13 +852,13 @@ private fun BtMouseModeCard(prefs: AppPrefs) {
         onDispose { BtMouseMode.removeListener(listener) }
     }
 
-    SectionCard(title = "蓝牙鼠标模式") {
+    SectionCard(title = "蓝牙设置") {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("把本机变成蓝牙鼠标", style = MaterialTheme.typography.bodyMedium)
+            Text("蓝牙鼠标模式", style = MaterialTheme.typography.bodyMedium)
             Switch(
                 checked = btOn,
                 onCheckedChange = { want ->

@@ -7,7 +7,8 @@ plugins {
 
 // ---------------------------------------------------------------- 正式签名
 // 签名信息放在仓库根目录的 keystore.properties（已 gitignore，不入库）。
-// 缺该文件或密钥文件不存在时，release 退回 debug 签名，保证新 clone 也能直接构建。
+// 构建 release 时若缺密钥会直接失败（见文末校验），避免误发出 debug 签名的包；
+// debug 构建不受影响，新 clone 依然可以直接调试。
 val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
@@ -25,8 +26,8 @@ android {
         applicationId = "mz.mibackscreen.mouse"
         minSdk = 35
         targetSdk = 37
-        versionCode = 3
-        versionName = "1.0.0"
+        versionCode = 4
+        versionName = "1.0.1"
     }
 
     signingConfigs {
@@ -131,6 +132,16 @@ val buildRootHelper = tasks.register("buildRootHelper") {
 
 tasks.matching { it.name == "preBuild" }.configureEach {
     dependsOn(buildRootHelper)
+}
+
+// ---------------------------------------------------------------- 发布前自检
+// 打正式包必须带正式密钥：缺 keystore.properties / 密钥文件时直接失败（debug 构建不受影响）。
+tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }.configureEach {
+    doFirst {
+        check(keystorePropsFile.isFile && releaseKeyFile != null) {
+            "缺少正式签名：请在仓库根目录提供 keystore.properties 与密钥文件（release.jks）后重试"
+        }
+    }
 }
 
 dependencies {

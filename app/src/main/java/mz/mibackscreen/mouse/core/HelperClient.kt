@@ -1,5 +1,6 @@
 package mz.mibackscreen.mouse.core
 
+import android.content.Context
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.os.SystemClock
@@ -9,15 +10,14 @@ import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.io.OutputStreamWriter
-import java.net.InetSocketAddress
-import java.net.Socket
 import java.util.concurrent.TimeUnit
 
 /**
- * 与 root 助手的通信客户端：优先 127.0.0.1 TCP，失败回退抽象 unix socket @bsm-helper，
+ * 与 root 助手的通信客户端：只连 App 私有目录里的控制口 socket（0600，助手侧还会校验对端 uid），
  * 断开后自动重连，用心跳判断链路是否存活。协议见 README。
  */
 class HelperClient(
+    private val context: Context,
     private val onFrame: (TouchFrame) -> Unit,
     private val onNotice: (String) -> Unit,
     private val onGeometry: (Int, Int) -> Unit = { _, _ -> },
@@ -34,14 +34,6 @@ class HelperClient(
     }
 
     private class LocalChannel(val socket: LocalSocket) : Channel {
-        override val input: InputStream get() = socket.inputStream
-        override val output: OutputStream get() = socket.outputStream
-        override fun close() {
-            runCatching { socket.close() }
-        }
-    }
-
-    private class TcpChannel(val socket: Socket) : Channel {
         override val input: InputStream get() = socket.inputStream
         override val output: OutputStream get() = socket.outputStream
         override fun close() {
@@ -146,22 +138,17 @@ class HelperClient(
     }
 
     private fun openChannel(): Channel? {
-        // 1) TCP（本机回环，最稳）
-        runCatching {
-            val sk = Socket()
-            sk.tcpNoDelay = true
-            sk.keepAlive = true
-            sk.connect(InetSocketAddress("127.0.0.1", RootHelper.TCP_PORT), 500)
-            return TcpChannel(sk)
-        }
-
-        // 2) 抽象 unix socket
+        // 只连 App 私有目录里的控制口 socket：目录 0700 + socket 0600，别的 App 连不上也抢不到
         runCatching {
             val s = LocalSocket()
-            s.connect(LocalSocketAddress(RootHelper.ABSTRACT_NAME, LocalSocketAddress.Namespace.ABSTRACT))
+            s.connect(
+                LocalSocketAddress(
+                    RootHelper.socketFile(context).absolutePath,
+                    LocalSocketAddress.Namespace.FILESYSTEM,
+                ),
+            )
             return LocalChannel(s)
         }
-
         return null
     }
 
@@ -179,7 +166,13 @@ class HelperClient(
                     srcHeight = h
                 }
                 Logs.d("Client", "助手协议 v$ver，触摸设备 ${srcWidth}x${srcHeight}")
-                if (ver < PROTO_VER) Logs.d("Client", "助手协议较旧(v$ver)，建议重启助手")
+                if (ver < PROTO_VER) {
+                    // v4 起控制口改为私有目录 socket + 对端 uid 校验，旧助手不能再用
+                    Logs.d("Client", "助手协议过旧(v$ver < v$PROTO_VER)，断开且不再重连")
+                    onNotice("助手版本过旧，请重装 App")
+                    close()
+                    return
+                }
                 onGeometry(srcWidth, srcHeight)
             }
             'S' -> onNotice(line.substring(1).trim())
@@ -334,7 +327,7 @@ class HelperClient(
     }
 
     companion object {
-        const val PROTO_VER = 3
+        const val PROTO_VER = 4
         private const val DEFAULT_SRC_W = 904
         private const val DEFAULT_SRC_H = 572
         private const val HEARTBEAT_MS = 3000L
