@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.BackScreenMouse" parent="android:Theme.Material.NoActionBar">
+        <!-- 默认纯白底：想要桌面壁纸时在「自定义外观」里打开开关 -->
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+        <!-- 顶部白色标题栏蒙版会盖住状态栏区域，这里把状态栏图标改成深色，否则白底上看不清 -->
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+
+    <!-- 背屏触控板：全屏纯黑、无任何系统装饰 -->
+    <style name="Theme.BackScreenMouse.Touchpad" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:colorBackground">@android:color/black</item>
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowShowWallpaper">false</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">always</item>
+        <item name="android:windowContentTransitions">false</item>
+    </style>
+</resources>
